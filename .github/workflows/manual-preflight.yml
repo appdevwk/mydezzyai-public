@@ -1,0 +1,26 @@
+name: myDEZZYAI manual preflight
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - name: Python regression tests with mocked providers
+        run: python -m unittest discover -s tests
+      - name: Client and game checks
+        run: node --test tests/test_client.cjs tests/test_games.cjs
+      - name: Record remaining release gates
+        run: echo 'Regression checks only; live auth, AI costs, persistence and voice still require QAI acceptance.' >> "$GITHUB_STEP_SUMMARY"
