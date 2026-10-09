@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
 import time
 from html import escape
@@ -11,8 +12,19 @@ from urllib.parse import urlsplit
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 import core
+import durable
 
 MAX_BODY = 3_000_000
+
+def livekit_origin(value):
+    try:
+        parsed = urlsplit(value)
+        if parsed.scheme != 'wss' or not parsed.hostname or not re.fullmatch(r'[A-Za-z0-9.-]+', parsed.hostname) or parsed.username or parsed.password or parsed.query or parsed.fragment:
+            return ''
+        port = parsed.port
+        return 'wss://' + parsed.hostname + (':' + str(port) if port else '')
+    except ValueError:
+        return ''
 
 def livekit_token():
     """Mint a short-lived browser token without exposing LiveKit secrets."""
@@ -22,6 +34,8 @@ def livekit_token():
     room = os.environ.get('LIVEKIT_ROOM', 'dezzy')
     if not api_key or not api_secret or not url or not room:
         raise RuntimeError('LiveKit is not configured. Set LIVEKIT_URL, LIVEKIT_API_KEY, and LIVEKIT_API_SECRET.')
+    if not livekit_origin(url):
+        raise RuntimeError('LIVEKIT_URL must be a secure WebSocket URL without credentials.')
     now = int(time.time())
     identity = 'dezzy-web-' + secrets.token_hex(8)
     header = {'alg': 'HS256', 'typ': 'JWT'}
@@ -39,6 +53,8 @@ def seal(job):
     return payload + '.' + signature
 
 def unseal(value):
+    if not isinstance(value, str):
+        raise ValueError('Invalid task state.')
     payload, signature = value.rsplit('.', 1)
     expected = hmac.new(os.environ['DEZZY_SIGNING_SECRET'].encode(), payload.encode(), hashlib.sha256).hexdigest()
     if not hmac.compare_digest(signature, expected):
@@ -115,11 +131,11 @@ def advance(data, call=core.api_call):
 
 def page():
     html = core.HTML[:core.HTML.index("<script>\nconst token=")]
-    html = html.replace('Local prototype ·', 'Private web workbench ·').replace('saved locally.', 'saved in this browser. Keep the page open while tasks run.')
+    html = html.replace('Local prototype ·', 'Private web workbench ·').replace('saved locally.', 'saved in your private server history. Paid requests are disabled unless explicitly enabled. Keep the page open while tasks run.')
     html = html.replace('<title>myDEZZYAI · Lexi</title>', '<title>myDEZZYAI | Private AI Research & Writing Workbench</title><meta name="description" content="Research, draft and create Python tools with myDEZZYAI. A private AI workbench with source links and downloadable results."><meta name="robots" content="noindex, nofollow">')
     html = html.replace('<h1>myDEZZYAI</h1>', '<nav aria-label="Main"><a href="/about">About myDEZZYAI</a></nav><main><h1>myDEZZYAI</h1>')
     html = html.replace('width:90%', 'width:90%;box-sizing:border-box').replace('button:disabled{opacity:.5}', 'button:disabled{opacity:.5}button:focus-visible,a:focus-visible,textarea:focus-visible,select:focus-visible,input:focus-visible{outline:3px solid #d3b4ff;outline-offset:3px}@media(max-width:500px){body{margin:20px auto;padding:0 14px}button{max-width:100%}pre{padding:12px}}')
-    html = html.replace('<style>', '<script src="https://cdn.jsdelivr.net/npm/livekit-client/dist/livekit-client.umd.min.js"></script><style>', 1)
+    html = html.replace('<style>', '<script src="https://cdn.jsdelivr.net/npm/livekit-client@2.22.3/dist/livekit-client.umd.min.js"></script><style>', 1)
     return html + '<script>' + (Path(__file__).parent.parent / 'web.js').read_text() + '</script></main></html>'
 
 def public_url():
@@ -136,7 +152,7 @@ def about():
     description = 'Explore myDEZZYAI: a private AI workbench for research with source links, written drafts, and downloadable Python tools.'
     schema = {'@context':'https://schema.org', '@type':'WebApplication', 'name':'myDEZZYAI', 'applicationCategory':'ProductivityApplication', 'operatingSystem':'Web browser', 'description':description}
     if base: schema['url'] = base + '/about'
-    return ('<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>' + title + '</title><meta name="description" content="' + description + '"><meta property="og:type" content="website"><meta property="og:title" content="' + title + '"><meta property="og:description" content="' + description + '"><meta name="twitter:card" content="summary">' + canonical + '<style>body{font:18px/1.6 system-ui;background:#101521;color:#edf0f9;margin:0}main{max-width:760px;margin:auto;padding:48px 24px}h1{font-size:clamp(2rem,8vw,3.4rem);line-height:1.1;color:#d3b4ff}h2{font-size:1.4rem}a{color:#d3b4ff}a:focus-visible{outline:3px solid #d3b4ff;outline-offset:4px}.cta{display:inline-block;padding:12px 20px;background:#d3b4ff;color:#101521;border-radius:10px;font-weight:700;text-decoration:none}small{color:#b6c2d8}</style><script type="application/ld+json">' + json.dumps(schema).replace('<','\\u003c') + '</script></head><body><main><p>YOUR PRIVATE AI WORKBENCH</p><h1>Turn a question into useful work.</h1><p>myDEZZYAI helps you research an idea, write a draft, or create a Python tool—with source links and results you can download.</p><p><a class="cta" href="/">Open private workbench</a></p><h2>Research with evidence</h2><p>Three research steps explore implementation, alternatives, and limitations. A review and revision follow each draft.</p><h2>Keep the result</h2><p>Download reports and Python files. Saved tasks stay in the browser on your device.</p><h2>A little room to play</h2><p>Try three-card tarot for reflection or five-card stud practice, without betting or payments.</p><h2>What to expect</h2><p>This is a personal workbench with private login. AI tasks require a configured API account and incur API costs. Generated code is syntax-checked; you should review and test it before use. Read-aloud uses your browser’s available voices.</p><small>VR, live voice agents, and realistic avatars are planned separately and are not part of this release.</small></main></body></html>')
+    return ('<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>' + title + '</title><meta name="description" content="' + description + '"><meta property="og:type" content="website"><meta property="og:title" content="' + title + '"><meta property="og:description" content="' + description + '"><meta name="twitter:card" content="summary">' + canonical + '<style>body{font:18px/1.6 system-ui;background:#101521;color:#edf0f9;margin:0}main{max-width:760px;margin:auto;padding:48px 24px}h1{font-size:clamp(2rem,8vw,3.4rem);line-height:1.1;color:#d3b4ff}h2{font-size:1.4rem}a{color:#d3b4ff}a:focus-visible{outline:3px solid #d3b4ff;outline-offset:4px}.cta{display:inline-block;padding:12px 20px;background:#d3b4ff;color:#101521;border-radius:10px;font-weight:700;text-decoration:none}small{color:#b6c2d8}</style><script type="application/ld+json">' + json.dumps(schema).replace('<','\\u003c') + '</script></head><body><main><p>YOUR PRIVATE AI WORKBENCH</p><h1>Turn a question into useful work.</h1><p>myDEZZYAI helps you research an idea, write a draft, or create a Python tool—with source links and results you can download.</p><p><a class="cta" href="/">Open private workbench</a></p><h2>Research with evidence</h2><p>Three research steps explore implementation, alternatives, and limitations. A review and revision follow each draft.</p><h2>Keep the result</h2><p>Download reports and Python files. Saved tasks are stored under your private server account when persistent storage is configured.</p><h2>A little room to play</h2><p>Try three-card tarot for reflection or five-card stud practice, without betting or payments.</p><h2>What to expect</h2><p>This is a personal workbench with private login. AI tasks require a configured API account and incur API costs. Generated code is syntax-checked; you should review and test it before use. Read-aloud uses your browser’s available voices.</p><small>VR, live voice agents, and realistic avatars are planned separately and are not part of this release.</small></main></body></html>')
 
 class handler(BaseHTTPRequestHandler):
     def log_message(self, *_):
@@ -159,6 +175,9 @@ class handler(BaseHTTPRequestHandler):
         # HSTS when the request arrived over HTTPS so local HTTP QA is usable.
         if self.headers.get('X-Forwarded-Proto', '').lower() == 'https':
             headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
+        origin = livekit_origin(os.environ.get('LIVEKIT_URL', ''))
+        if origin:
+            headers['Content-Security-Policy'] = headers['Content-Security-Policy'].replace("connect-src 'self' https://*.livekit.cloud wss://*.livekit.cloud", "connect-src 'self' " + origin + ' ' + origin.replace('wss://', 'https://', 1))
         for k, v in headers.items():
             self.send_header(k, v)
         if self.path.split('?', 1)[0] not in ('/about', '/robots.txt', '/sitemap.xml'):
@@ -180,6 +199,7 @@ class handler(BaseHTTPRequestHandler):
             valid = False
         if not valid:
             self.send(401, {'error': 'Sign in to use myDEZZYAI.'}, authenticate=True)
+        if valid: self.owner = user
         return valid
 
     def do_GET(self):
@@ -194,8 +214,12 @@ class handler(BaseHTTPRequestHandler):
             return self.send(200, '<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>' + escape(base + '/about') + '</loc></url></urlset>', 'application/xml')
         if not self.authorized(): return
         if path == '/': return self.send(200, page(), 'text/html')
-        if path == '/api/health': return self.send(200, {'ok': True, 'ai_configured': bool(os.environ.get('OPENAI_API_KEY'))})
+        if path == '/api/health': return self.send(200, {'ok': True, 'ai_configured': bool(os.environ.get('OPENAI_API_KEY')), 'paid_ai_enabled': os.environ.get('DEZZY_ALLOW_PAID_AI') == 'true'})
+        if path == '/api/jobs':
+            try: return self.send(200, {'jobs': durable.history(self.owner)})
+            except durable.StorageUnavailable as exc: return self.send(503, {'error':str(exc)})
         if path == '/api/livekit/token':
+            if os.environ.get('DEZZY_ALLOW_LIVEKIT') != 'true': return self.send(403, {'error':'Live voice is disabled until its account costs and agent are verified.'})
             try:
                 return self.send(200, livekit_token())
             except RuntimeError as exc:
@@ -216,6 +240,12 @@ class handler(BaseHTTPRequestHandler):
             if not 1 <= size <= MAX_BODY: raise ValueError('Request is empty or too large.')
             data = json.loads(self.rfile.read(size))
             if not isinstance(data, dict): raise ValueError('Expected a JSON object.')
-            self.send(200, advance(data))
+            self.send(200, durable.step(self.owner, data, advance))
+        except durable.StorageUnavailable as exc:
+            self.send(503, {'error':str(exc)})
+        except durable.QuotaExceeded as exc:
+            self.send(403, {'error':str(exc)})
+        except durable.RequestConflict as exc:
+            self.send(409, {'error':str(exc)})
         except (ValueError, TypeError, KeyError):
             self.send(400, {'error': 'Invalid request or task state.'})

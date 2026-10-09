@@ -21,6 +21,7 @@ https://openai.github.io/openai-agents-python/multi_agent/
 """
 
 import argparse
+from contextvars import ContextVar
 import concurrent.futures
 import json
 import os
@@ -60,8 +61,14 @@ PRODUCT_SCHEMA = object_schema({
 })
 
 
+paid_request_reservation = ContextVar('paid_request_reservation', default=False)
+
 def api_call(instructions, prompt, search=False, schema=None):
     """One request, no automatic retries (avoid hidden duplicate charges)."""
+    if os.environ.get("DEZZY_ALLOW_PAID_AI") != "true":
+        raise RuntimeError("Paid AI is disabled; explicit authorization and server quotas are required.")
+    if not paid_request_reservation.get():
+        raise RuntimeError("A durable request reservation is required before a provider call.")
     key = os.environ.get("OPENAI_API_KEY", "").strip()
     if not key:
         raise RuntimeError("Set OPENAI_API_KEY in the server environment first.")
@@ -258,9 +265,9 @@ HTML = r'''<!doctype html><html lang="en"><meta charset="utf-8">
 <p><label for="mode">Deliverable </label><select id="mode"><option value="research">Research report</option><option value="draft">Written draft</option><option value="code">Python program</option></select></p>
 <label for="task">What should we work on?</label><textarea id="task" maxlength="8000" placeholder="Research and build a useful tool…"></textarea>
 <button id="run">Start task</button><button id="read">Read result aloud</button><button id="stop">Stop reading</button>
-<p id="status" role="status"></p><ol id="steps"></ol><pre id="result">Your work will appear here.</pre><div id="downloads"></div><h2>Sources consulted</h2><ul id="sources"></ul><h2>Saved tasks</h2><div id="history"></div>
+<p id="status" role="status"></p><ol id="steps"></ol><pre id="result">Your work will appear here.</pre><div id="downloads"></div><h2>Sources consulted</h2><ul id="sources"></ul><h2>Saved tasks</h2><button id="history-refresh">Load saved tasks</button><div id="history"></div>
 <hr><h2>Talk with DEZZY</h2><p>Connect to the LiveKit room to receive DEZZY’s live voice and avatar track. Configure LiveKit server-side before connecting.</p>
-<div id="livekit-panel"><button id="livekit-connect">Connect to DEZZY</button><button id="livekit-disconnect" disabled>Disconnect</button><p id="livekit-status" role="status">LiveKit is ready when configured.</p><video id="livekit-avatar" autoplay playsinline controls></video></div>
+<div id="livekit-panel"><button id="livekit-connect">Connect to DEZZY</button><button id="livekit-disconnect" disabled>Disconnect</button><p id="livekit-status" role="status">LiveKit is ready when configured.</p><div id="livekit-avatar" aria-label="DEZZY live avatar"></div></div>
 <hr><h2>Play with Dezzy</h2><p>These games run on your device without an API key.</p>
 <button id="tarot-tab">Tarot cards</button><button id="stud-tab">Five-card stud</button>
 <section id="tarot-panel"><h3>Three-card tarot</h3><p>For entertainment and reflection. Cards cannot predict events or tell you what another person thinks.</p>
