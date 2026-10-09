@@ -3,6 +3,9 @@ import http.client
 import json
 import os
 import threading
+import tempfile
+import pathlib
+import uuid
 import unittest
 from http.server import ThreadingHTTPServer
 from unittest.mock import patch
@@ -19,8 +22,9 @@ def fake(instructions,prompt,search=False,schema=None):
 
 class WebTests(unittest.TestCase):
     def setUp(self):
-        self.env=patch.dict(os.environ,ENV);self.env.start()
-    def tearDown(self): self.env.stop()
+        self.temp=tempfile.TemporaryDirectory(dir=pathlib.Path.cwd())
+        self.env=patch.dict(os.environ,{**ENV,'VERCEL':'','DATABASE_URL':'','DEZZY_DATABASE_PATH':self.temp.name+'/web.db','DEZZY_ALLOW_PAID_AI':'true','DEZZY_DAILY_REQUEST_LIMIT':'50','DEZZY_TOTAL_REQUEST_LIMIT':'50'});self.env.start()
+    def tearDown(self): self.env.stop();self.temp.cleanup()
     def test_seven_separate_invocations(self):
         for mode in ('research','draft','code'):
             body={'task':'Build my project','mode':mode}
@@ -55,6 +59,12 @@ class WebTests(unittest.TestCase):
         result=index.advance({'task':'Task','mode':'research'},fail)
         self.assertEqual(result['job']['status'],'failed');self.assertEqual(len(count),1)
         with self.assertRaises(ValueError):index.advance({'state':result['state']},fail)
+    def test_non_string_state_is_rejected_cleanly(self):
+        for state in (True, 1, ['opaque'], {'payload': 'opaque'}):
+            with self.subTest(state=state):
+                with self.assertRaises(ValueError):
+                    index.advance({'state': state}, fake)
+
     def test_invalid_input(self):
         for body in ({},{'task':'','mode':'code'},{'task':'a'*8001,'mode':'code'},{'task':'Valid','mode':'bad'}):
             with self.assertRaises(ValueError):index.advance(body,fake)
@@ -100,11 +110,19 @@ class WebTests(unittest.TestCase):
             self.assertEqual(request('POST','/api/step','[]',h)[0],400)
             original=index.advance
             with patch.object(index,'advance',side_effect=lambda body:original(body,fake)):
-                status,body,_=request('POST','/api/step',json.dumps({'task':'Test task','mode':'code'}),h)
+                status,body,_=request('POST','/api/step',json.dumps({'task':'Test task','mode':'code','request_id':str(uuid.uuid4())}),h)
                 self.assertEqual(status,200)
                 result=json.loads(body)
                 self.assertEqual(result['job']['calls'],1)
                 self.assertEqual(index.unseal(result['state'])['id'],result['job']['id'])
+                status,history,_=request('GET','/api/jobs',headers=auth)
+                self.assertEqual(status,200);self.assertEqual(json.loads(history)['jobs'][0]['job']['id'],result['job']['id'])
+                self.assertEqual(request('GET','/api/jobs')[0],401)
+            with patch.dict(os.environ,{'DEZZY_ALLOW_PAID_AI':'false'}):
+                with patch.object(index,'advance') as no_call:
+                    denied={'task':'No spend','mode':'draft','request_id':str(uuid.uuid4())}
+                    self.assertEqual(request('POST','/api/step',json.dumps(denied),h)[0],403);no_call.assert_not_called()
+            self.assertEqual(request('GET','/api/livekit/token',headers=auth)[0],403)
             self.assertEqual(request('GET','/not-found',headers=auth)[0],404)
             with patch.dict(os.environ,{'DEZZY_PASSWORD':''}):self.assertEqual(request('GET','/',headers=auth)[0],503)
         finally:conn.close();server.shutdown();server.server_close();thread.join()
